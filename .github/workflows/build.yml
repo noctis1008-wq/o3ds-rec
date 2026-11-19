@@ -1,0 +1,19 @@
+name: build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy
+      - run: bash test/run_test.sh && PACK=1 bash test/run_test.sh
+  sdbench:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C tools/sdbench
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdbench-3dsx
+          path: tools/sdbench/sdbench.3dsx
