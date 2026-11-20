@@ -3,8 +3,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  release:
-    types: [published]
   workflow_dispatch:
 permissions:
   contents: write
@@ -26,9 +24,11 @@ jobs:
           name: sdbench-3dsx
           path: tools/sdbench/sdbench.3dsx
   release:
-    # GitHub で Release を公開すると、ビルドした sdbench.3dsx をその Release に添付する
-    # （3DS の GitHub ダウンローダーや Universal-Updater は Releases から取得するため）
-    if: github.event_name == 'release'
+    # main への push ごとに Release を公開し sdbench.3dsx を添付する。
+    # Checkpoint の c_github_downloader.c は
+    #   https://github.com/noctis1008-wq/o3ds-rec/releases/latest/download/sdbench.3dsx
+    # から取得する。
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [host-test, sdbench]
     runs-on: ubuntu-latest
     steps:
@@ -37,5 +37,12 @@ jobs:
           name: sdbench-3dsx
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: build-${{ github.run_number }}
+          name: o3ds-rec SD bench (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           files: sdbench.3dsx
+          body: |
+            旧3DS用 SD書き込みベンチ。sdbench.3dsx を SD の /3ds/ に置き、Homebrew Launcher から起動。
+            結果は sd:/o3ds-rec/bench_result.txt に保存される。
+            Checkpoint の GitHub ダウンローダー（c_github_downloader.c）のプリセットからも取得できる。
