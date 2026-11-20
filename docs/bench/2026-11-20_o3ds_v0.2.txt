@@ -1,0 +1,19 @@
+o3ds-rec SD bench v0.2  model: Old 3DS
+(needs ~200MB free on SD, takes 1-2 min)
+
+[A] SD sequential write
+  64KB             3.28 MB/s (worst 158 ms)
+  256KB            5.29 MB/s (worst 151 ms)
+  1MB              6.24 MB/s (worst 200 ms)
+  1MB+prealloc     6.54 MB/s (worst 187 ms)
+  256KB+prealloc   6.28 MB/s (worst 66 ms)
+  187KB unaligned  4.07 MB/s (worst 53 ms)
+
+[B] Record pipeline, top 400x240, worst case
+  RGB565         187KB/f diff 3.3 wr 28.8 ms => 31.2 fps (worst 214)
+  RGB565      +P 187KB/f diff 3.3 wr 27.4 ms => 32.6 fps (worst 194)
+  BGR8        +P 281KB/f diff 4.9 wr 42.2 ms => 21.3 fps (worst 189)
+  RGBA8>BGR8  +P 281KB/f diff 6.8 wr 41.9 ms => 20.5 fps (worst 186)
+
+Done. Saved: sdmc:/o3ds-rec/bench_result.txt
+Press START to exit.
