@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy
-      - run: bash test/run_test.sh && PACK=1 bash test/run_test.sh
+      - run: bash test/run_test.sh && PACK=1 bash test/run_test.sh && RGB565=1 bash test/run_test.sh && HASH=1 RGB565=1 SPLIT=1 bash test/run_test.sh
   sdbench:
     runs-on: ubuntu-latest
     container: devkitpro/devkitarm:latest

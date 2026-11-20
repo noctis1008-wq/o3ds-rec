@@ -22,7 +22,8 @@ extern "C" {
 
 #define REC_MAGIC "3DRC"
 #define REC_VERSION 1
-#define REC_FILE_HEADER_SIZE 32
+/* ファイル先頭ヘッダ。512B にして以降の書き込みを SD のセクタ境界に揃える */
+#define REC_FILE_HEADER_SIZE 512
 #define REC_CHUNK_HEADER_SIZE 16
 #define REC_VFRM_HEADER_SIZE 12
 
@@ -61,6 +62,7 @@ typedef struct {
     uint32_t since_key;
     uint8_t have_prev;
     uint8_t pack_rgba8; /* 1: RGBA8 のアルファを捨てて BGR8 で保存（容量 3/4） */
+    uint8_t to_rgb565;  /* 1: RGBA8 / BGR8 を RGB565 に変換して保存（容量 1/2〜2/3、既定） */
 } rec_screen_state;
 
 static inline uint32_t rec_bpp(uint8_t format)
@@ -81,7 +83,7 @@ static inline size_t rec_frame_max_size(uint16_t lines, uint8_t format)
 
 void rec_screen_init(rec_screen_state *st, uint8_t screen, uint16_t lines, uint32_t key_interval);
 
-/* ファイル先頭ヘッダ（32バイト）を書く。戻り値は書いたバイト数 */
+/* ファイル先頭ヘッダ（REC_FILE_HEADER_SIZE バイト）を書く。戻り値は書いたバイト数 */
 size_t rec_write_file_header(uint8_t *out, uint64_t start_tick, uint32_t flags);
 
 /*
@@ -93,6 +95,20 @@ size_t rec_write_file_header(uint8_t *out, uint64_t start_tick, uint32_t flags);
  */
 size_t rec_encode_frame(rec_screen_state *st, const uint8_t *cur, const uint8_t *prev,
                         uint32_t pitch, uint8_t format, uint64_t tick, uint8_t *out);
+
+/*
+ * 前フレームのバッファを持たずに差分を取る版（旧3DSはメモリが足りないため）。
+ *   line_hash : ライン数ぶんの配列。最後に「書いた」フレームの各ラインのハッシュ。
+ *               この関数が更新する。最初は中身は何でもよい（初回はキーフレームになる）
+ * 戻り値は rec_encode_frame と同じ。
+ * 書き込み先に空きがなくフレームを捨てる場合は、この関数を呼ばないこと
+ * （呼ぶと line_hash が進み、次のフレームの差分が欠ける）。
+ */
+size_t rec_encode_frame_hashed(rec_screen_state *st, const uint8_t *cur, uint32_t pitch,
+                               uint8_t format, uint64_t tick, uint8_t *out, uint64_t *line_hash);
+
+/* 1ラインのハッシュ（line_bytes は 4 の倍数、line は 4 バイト境界） */
+uint64_t rec_line_hash(const uint8_t *line, uint32_t line_bytes);
 
 /* 音声チャンク（PCM16LE）。戻り値は書いたバイト数 */
 size_t rec_write_audio(uint8_t *out, uint64_t tick, uint32_t sample_rate, uint16_t channels,

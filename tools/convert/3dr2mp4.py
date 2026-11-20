@@ -41,31 +41,6 @@ class Chunk:
     payload: bytes
 
 
-def read_chunks(paths: list[str]) -> tuple[int, int, Iterator[Chunk]]:
-    """複数の分割ファイルを先頭ヘッダ検証つきで順に読む"""
-    with open(paths[0], "rb") as f:
-        tick_hz, start_tick = _read_header(f, paths[0])
-
-    def gen() -> Iterator[Chunk]:
-        for p in paths:
-            with open(p, "rb") as f:
-                _read_header(f, p)
-                while True:
-                    h = f.read(CHUNK_HDR)
-                    if len(h) < CHUNK_HDR:
-                        if h:
-                            print(f"警告: {p} の末尾に不完全なチャンク（録画中の電源断など）", file=sys.stderr)
-                        break
-                    ctype, length, tick = h[:4], *struct.unpack("<IQ", h[4:])
-                    payload = f.read(length)
-                    if len(payload) < length:
-                        print(f"警告: {p} の末尾チャンクが途中で切れています。そこまでを変換します", file=sys.stderr)
-                        break
-                    yield Chunk(ctype, tick, payload)
-
-    return tick_hz, start_tick, gen()
-
-
 def _read_header(f: BinaryIO, path: str) -> tuple[int, int]:
     h = f.read(FILE_HDR)
     if len(h) < FILE_HDR or h[:4] != MAGIC:
@@ -75,6 +50,66 @@ def _read_header(f: BinaryIO, path: str) -> tuple[int, int]:
         sys.exit(f"エラー: 未対応のバージョン {version}")
     f.seek(hdr_size)
     return tick_hz, start_tick
+
+
+class PartStream:
+    """分割ファイルを、各ファイルのヘッダを飛ばして1本のバイト列として読む。
+    （3DS 側は 256KB 単位でデータを書き、4GB 手前で次のファイルに切り替えるので、
+      チャンクがファイルの境目をまたぐことがある）"""
+
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = list(paths)
+        self.f: BinaryIO | None = None
+        self.tick_hz = 0
+        self.start_tick = 0
+        self._next()
+
+    def _next(self) -> bool:
+        if self.f:
+            self.f.close()
+            self.f = None
+        if not self.paths:
+            return False
+        p = self.paths.pop(0)
+        self.f = open(p, "rb")
+        hz, st = _read_header(self.f, p)
+        if not self.tick_hz:
+            self.tick_hz, self.start_tick = hz, st
+        return True
+
+    def read(self, n: int) -> bytes:
+        out = b""
+        while len(out) < n and self.f:
+            d = self.f.read(n - len(out))
+            if not d:
+                if not self._next():
+                    break
+                continue
+            out += d
+        return out
+
+
+def read_chunks(paths: list[str]) -> tuple[int, int, Iterator[Chunk]]:
+    """複数の分割ファイルを先頭ヘッダ検証つきで順に読む"""
+    stream = PartStream(paths)
+
+    def gen() -> Iterator[Chunk]:
+        while True:
+            h = stream.read(CHUNK_HDR)
+            if len(h) < CHUNK_HDR:
+                if h.strip(b"\0"):
+                    print("警告: 末尾に不完全なチャンクがあります（録画中の電源断など）", file=sys.stderr)
+                break
+            ctype, length, tick = h[:4], *struct.unpack("<IQ", h[4:])
+            if ctype == b"\0\0\0\0":
+                break  # 事前確保した領域の残り（ここでデータ終わり）
+            payload = stream.read(length)
+            if len(payload) < length:
+                print("警告: 末尾のチャンクが途中で切れています。そこまでを変換します", file=sys.stderr)
+                break
+            yield Chunk(ctype, tick, payload)
+
+    return stream.tick_hz, stream.start_tick, gen()
 
 
 class ScreenDecoder:

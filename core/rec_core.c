@@ -50,16 +50,34 @@ size_t rec_write_file_header(uint8_t *out, uint64_t start_tick, uint32_t flags)
     return REC_FILE_HEADER_SIZE;
 }
 
-size_t rec_encode_frame(rec_screen_state *st, const uint8_t *cur, const uint8_t *prev,
-                        uint32_t pitch, uint8_t format, uint64_t tick, uint8_t *out)
+uint64_t rec_line_hash(const uint8_t *line, uint32_t line_bytes)
+{
+    /* 2系統の 32bit ハッシュを組み合わせて 64bit にする（ARM11 で軽い演算だけ） */
+    const uint32_t *p = (const uint32_t *)(const void *)line;
+    uint32_t n = line_bytes / 4u;
+    uint32_t a = 0x811c9dc5u, b = 0x9e3779b9u;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t w = p[i];
+        a = (a ^ w) * 0x01000193u;
+        b = ((b << 5) | (b >> 27)) + (w ^ (i * 0x85ebca6bu));
+    }
+    return ((uint64_t)a << 32) | b;
+}
+
+static size_t encode_common(rec_screen_state *st, const uint8_t *cur, const uint8_t *prev,
+                            uint64_t *line_hash, uint32_t pitch, uint8_t format, uint64_t tick,
+                            uint8_t *out)
 {
     const uint32_t src_line_bytes = REC_LINE_PX * rec_bpp(format);
-    const int pack = st->pack_rgba8 && format == REC_FMT_RGBA8;
-    const uint8_t out_format = pack ? REC_FMT_BGR8 : format;
+    const int to565 = st->to_rgb565 && (format == REC_FMT_RGBA8 || format == REC_FMT_BGR8);
+    const int pack = !to565 && st->pack_rgba8 && format == REC_FMT_RGBA8;
+    const uint8_t out_format = to565 ? REC_FMT_RGB565 : pack ? REC_FMT_BGR8 : format;
+    /* 入力1ピクセル内の B,G,R のバイト位置（RGBA8: A,B,G,R / BGR8: B,G,R） */
+    const uint32_t sbpp = rec_bpp(format), boff = format == REC_FMT_RGBA8 ? 1u : 0u;
     const uint32_t line_bytes = REC_LINE_PX * rec_bpp(out_format);
     const uint32_t bm_bytes = rec_bitmap_bytes(st->lines);
 
-    int key = !prev || !st->have_prev || format != st->format ||
+    int key = (!prev && !line_hash) || !st->have_prev || format != st->format ||
               (st->key_interval && st->since_key >= st->key_interval);
 
     uint8_t *hdr = out;
@@ -72,10 +90,26 @@ size_t rec_encode_frame(rec_screen_state *st, const uint8_t *cur, const uint8_t 
 
     for (uint32_t i = 0; i < st->lines; ++i) {
         const uint8_t *c = cur + (size_t)i * pitch;
-        if (!key && memcmp(c, prev + (size_t)i * pitch, src_line_bytes) == 0)
+        if (line_hash) {
+            uint64_t h = rec_line_hash(c, src_line_bytes);
+            int same = line_hash[i] == h;
+            line_hash[i] = h;
+            if (!key && same)
+                continue;
+        } else if (!key && memcmp(c, prev + (size_t)i * pitch, src_line_bytes) == 0) {
             continue;
+        }
         bitmap[i >> 3] |= (uint8_t)(1u << (i & 7));
-        if (pack) {
+        if (to565) {
+            for (uint32_t k = 0; k < REC_LINE_PX; ++k) {
+                uint32_t v = ((uint32_t)(c[boff + 2] >> 3) << 11) | ((uint32_t)(c[boff + 1] >> 2) << 5) |
+                             (uint32_t)(c[boff] >> 3);
+                w[0] = (uint8_t)v;
+                w[1] = (uint8_t)(v >> 8);
+                w += 2;
+                c += sbpp;
+            }
+        } else if (pack) {
             /* メモリ上 A,B,G,R → B,G,R */
             for (uint32_t k = 0; k < REC_LINE_PX; ++k) {
                 w[0] = c[1];
@@ -110,6 +144,18 @@ size_t rec_encode_frame(rec_screen_state *st, const uint8_t *cur, const uint8_t 
     st->frame_count++;
     st->since_key = key ? 1 : st->since_key + 1;
     return (size_t)(w - out);
+}
+
+size_t rec_encode_frame(rec_screen_state *st, const uint8_t *cur, const uint8_t *prev,
+                        uint32_t pitch, uint8_t format, uint64_t tick, uint8_t *out)
+{
+    return encode_common(st, cur, prev, NULL, pitch, format, tick, out);
+}
+
+size_t rec_encode_frame_hashed(rec_screen_state *st, const uint8_t *cur, uint32_t pitch,
+                               uint8_t format, uint64_t tick, uint8_t *out, uint64_t *line_hash)
+{
+    return encode_common(st, cur, NULL, line_hash, pitch, format, tick, out);
 }
 
 size_t rec_write_audio(uint8_t *out, uint64_t tick, uint32_t sample_rate, uint16_t channels,

@@ -7,14 +7,17 @@ cd "$WORK"
 gcc -O2 -Wall -Wextra -std=c11 -D_DEFAULT_SOURCE -o gen "$HERE/gen_test.c" "$HERE/../core/rec_core.c" -lm
 ./gen
 ${PACK:+echo "(RGBA8→BGR8 パック有効)"}
-python3 "$HERE/../tools/convert/3dr2mp4.py" out.3dr -o both.mp4 --dump-raw got
+${RGB565:+echo "(24bit→RGB565 変換有効)"}
+${HASH:+echo "(ハッシュ差分＝旧3DS方式)"}
+IN="out.3dr"; [ -f out.part2.3dr ] && IN="out.3dr out.part2.3dr"
+python3 "$HERE/../tools/convert/3dr2mp4.py" $IN -o both.mp4 --dump-raw got
 n=0
 for f in expect/*.bin; do
   cmp -s "$f" "got/$(basename "$f")" || { echo "不一致: $f"; exit 1; }
   n=$((n+1))
 done
 echo "バイト一致: $n バッファ"
-python3 "$HERE/../tools/convert/3dr2mp4.py" out.3dr -o top.mkv --layout top --lossless
+python3 "$HERE/../tools/convert/3dr2mp4.py" $IN -o top.mkv --layout top --lossless
 # 可逆出力の1フレーム目で向きを確認（左上=赤、右下=青）
 ffmpeg -loglevel error -i top.mkv -frames:v 1 -f rawvideo -pix_fmt rgb24 f0.rgb
 python3 - <<'EOF'

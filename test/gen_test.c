@@ -48,7 +48,7 @@ static void draw(uint8_t *fb, uint32_t pitch, uint8_t fmt, int lines, int t)
         }
 }
 
-static int g_pack;
+static int g_pack, g_565;
 
 static void dump_expect(const uint8_t *fb, uint32_t pitch, uint8_t fmt, int lines, int screen, uint32_t no)
 {
@@ -57,7 +57,14 @@ static void dump_expect(const uint8_t *fb, uint32_t pitch, uint8_t fmt, int line
     FILE *f = fopen(path, "wb");
     for (int i = 0; i < lines; ++i) {
         const uint8_t *l = fb + (size_t)i * pitch;
-        if (g_pack && fmt == REC_FMT_RGBA8)
+        if (g_565 && (fmt == REC_FMT_RGBA8 || fmt == REC_FMT_BGR8)) {
+            int bo = fmt == REC_FMT_RGBA8 ? 1 : 0, bp = (int)rec_bpp(fmt);
+            for (int k = 0; k < REC_LINE_PX; ++k) {
+                const uint8_t *p = l + k * bp + bo;
+                uint16_t v = (uint16_t)(((p[2] >> 3) << 11) | ((p[1] >> 2) << 5) | (p[0] >> 3));
+                fwrite(&v, 2, 1, f);
+            }
+        } else if (g_pack && fmt == REC_FMT_RGBA8)
             for (int k = 0; k < REC_LINE_PX; ++k)
                 fwrite(l + k * 4 + 1, 1, 3, f);
         else
@@ -66,10 +73,24 @@ static void dump_expect(const uint8_t *fb, uint32_t pitch, uint8_t fmt, int line
     fclose(f);
 }
 
+/* 出力をメモリに貯め、最後に（SPLIT 指定時は2ファイルに分けて）書き出す */
+static uint8_t *g_stream;
+static size_t g_len, g_cap;
+static void put(const void *p, size_t n)
+{
+    if (g_len + n > g_cap) {
+        g_cap = (g_len + n) * 2;
+        g_stream = realloc(g_stream, g_cap);
+    }
+    memcpy(g_stream + g_len, p, n);
+    g_len += n;
+}
+
 int main(void)
 {
     mkdir("expect", 0755);
-    FILE *out = fopen("out.3dr", "wb");
+    int hashed = getenv("HASH") != NULL;
+    static uint64_t top_hash[TOP_LINES], bot_hash[BOT_LINES];
     const uint32_t top_pitch = 240 * 4 + 64; /* ストライドに余白がある場合も試す */
     const uint32_t bot_pitch = 240 * 3;
     uint8_t *top[2], *bot[2];
@@ -84,23 +105,27 @@ int main(void)
     rec_screen_init(&st_bot, REC_SCREEN_BOTTOM, BOT_LINES, 120);
     g_pack = getenv("PACK") != NULL;
     st_top.pack_rgba8 = (uint8_t)g_pack;
+    g_565 = getenv("RGB565") != NULL;
+    st_top.to_rgb565 = st_bot.to_rgb565 = (uint8_t)g_565;
 
     uint64_t tick0 = 123456789ull;
-    fwrite(buf, 1, rec_write_file_header(buf, tick0, 0), out);
+    uint8_t hdr[REC_FILE_HEADER_SIZE];
+    rec_write_file_header(hdr, tick0, 0);
 
     size_t total = 0, raw_total = 0;
     int written_frames = 0;
     for (int f = 0; f < 300; ++f) { /* 60Hzで5秒分キャプチャ */
         uint64_t tick = tick0 + (uint64_t)f * TICKS_PER_60HZ + 1000;
-        int cur = f & 1;
+        int cur = hashed ? 0 : (f & 1); /* HASH: 旧3DSと同じくバッファ1枚 */
         /* 前半 RGB565 / 後半 RGBA8（途中で形式が変わるゲームを想定） */
         uint8_t tfmt = f < 150 ? REC_FMT_RGB565 : REC_FMT_RGBA8;
         int game_frame = f / 2; /* ゲームは30fps: 2回に1回は同じ絵 */
         memset(top[cur], 0xcc, (size_t)TOP_LINES * top_pitch); /* 余白にゴミ */
         draw(top[cur], top_pitch, tfmt, TOP_LINES, game_frame);
-        size_t n = rec_encode_frame(&st_top, top[cur], f ? top[cur ^ 1] : NULL, top_pitch, tfmt, tick, buf);
+        size_t n = hashed ? rec_encode_frame_hashed(&st_top, top[cur], top_pitch, tfmt, tick, buf, top_hash)
+                          : rec_encode_frame(&st_top, top[cur], f ? top[cur ^ 1] : NULL, top_pitch, tfmt, tick, buf);
         if (n) {
-            fwrite(buf, 1, n, out);
+            put(buf, n);
             dump_expect(top[cur], top_pitch, tfmt, TOP_LINES, 0, st_top.frame_count - 1);
             written_frames++;
         }
@@ -109,9 +134,10 @@ int main(void)
 
         /* 下画面は1秒ごとにだけ変わる */
         draw(bot[cur], bot_pitch, REC_FMT_BGR8, BOT_LINES, (f / 60) * 20);
-        n = rec_encode_frame(&st_bot, bot[cur], f ? bot[cur ^ 1] : NULL, bot_pitch, REC_FMT_BGR8, tick + 10, buf);
+        n = hashed ? rec_encode_frame_hashed(&st_bot, bot[cur], bot_pitch, REC_FMT_BGR8, tick + 10, buf, bot_hash)
+                   : rec_encode_frame(&st_bot, bot[cur], f ? bot[cur ^ 1] : NULL, bot_pitch, REC_FMT_BGR8, tick + 10, buf);
         if (n) {
-            fwrite(buf, 1, n, out);
+            put(buf, n);
             dump_expect(bot[cur], bot_pitch, REC_FMT_BGR8, BOT_LINES, 1, st_bot.frame_count - 1);
         }
         total += n;
@@ -125,10 +151,25 @@ int main(void)
             pcm[2 * i] = pcm[2 * i + 1] = (int16_t)(s * 8000);
         }
         n = rec_write_audio(buf, tick + 20, 32728, 2, pcm, (uint32_t)nframes);
-        fwrite(buf, 1, n, out);
+        put(buf, n);
     }
-    fwrite(buf, 1, rec_write_eos(buf, tick0 + 300ull * TICKS_PER_60HZ), out);
+    put(buf, rec_write_eos(buf, tick0 + 300ull * TICKS_PER_60HZ));
+
+    /* SPLIT: 256KB 境界で2ファイルに分け、最後に事前確保ぶんのゼロを付ける（3DS の書き方と同じ） */
+    size_t cut = getenv("SPLIT") ? (g_len / 2) / (256 * 1024) * (256 * 1024) : g_len;
+    FILE *out = fopen("out.3dr", "wb");
+    fwrite(hdr, 1, sizeof hdr, out);
+    fwrite(g_stream, 1, cut, out);
     fclose(out);
+    if (cut < g_len) {
+        out = fopen("out.part2.3dr", "wb");
+        fwrite(hdr, 1, sizeof hdr, out);
+        fwrite(g_stream + cut, 1, g_len - cut, out);
+        static uint8_t zeros[300000];
+        fwrite(zeros, 1, sizeof zeros, out);
+        fclose(out);
+        printf("split at %zu bytes\n", cut);
+    }
     printf("top frames written=%d  video bytes=%zu (raw would be %zu, %.1f%%)\n", written_frames, total,
            raw_total, 100.0 * total / raw_total);
     return 0;
