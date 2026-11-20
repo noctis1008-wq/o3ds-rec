@@ -49,7 +49,11 @@
 - 上画面 60fps（2Dゲーム・UI中心で変化が少ない場面）: 有望
 - 60fps の3Dゲーム全画面変化: SD 速度次第。足りなければ自動で 30fps に間引く
 
-## 3. 実装の土台: NTR-HR（xzn/ntr-hr）の旧3DSモードを改造
+## 3. 実装の土台
+
+**2026-11-20 変更: Luma3DS の Rosalina に録画機能を入れる方式に切り替えた。** 理由: (1) HOME メニューからゲームまで続けて録りたい（ゲーム内プラグインでは不可）、(2) NTR-HR は旧3DS実機でリモートプレイ開始時にゲームが止まった（録画なしでも再現）、(3) Wi-Fi 不要・画面切り替えに合わせて取り込める。実装: noctis1008-wq/Luma3DS `o3ds-rec` ブランチの sysmodules/rosalina/source/recorder.c。chainload 用 firm として配布し boot.firm は触らない。
+
+### （旧）NTR-HR（xzn/ntr-hr）の旧3DSモードを改造
 
 NTR-HR には既に旧3DS向けビルド（`o3ds` / `mem3` feature）があり、画面取得の仕組みはそのまま使える。
 

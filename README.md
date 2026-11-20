@@ -14,20 +14,21 @@ tools/sdbench/   sdbench.3dsx … 旧3DSのSD書き込み速度・録画パイ�
 test/            往復テスト（Cで録画 → Pythonで復元 → バイト一致と向きを確認）
 ```
 
-## 録画のしかた（フェーズ1・実機テスト中）
+## 録画のしかた（実機テスト中）
 
-録画機能は NTR-HR のフォーク [noctis1008-wq/ntr-hr](https://github.com/noctis1008-wq/ntr-hr/tree/o3ds-rec)（`o3ds-rec` ブランチ）に入っている。
+録画機能は Luma3DS のフォーク [noctis1008-wq/Luma3DS](https://github.com/noctis1008-wq/Luma3DS/tree/o3ds-rec)（`o3ds-rec` ブランチ）の Rosalina メニューに入っている。HOME メニューからゲームまで続けて録れる。
 
-1. [Releases](https://github.com/noctis1008-wq/ntr-hr/releases/latest) の `BootNTRSelector-o3ds-rec.3dsx` を SD の `/3ds/` に置く
-   （Checkpoint の GitHub ダウンローダーなら「o3ds-rec NTR (SD recording)」）
-2. Wi-Fi に接続した状態で、Homebrew Launcher から BootNTRSelector を起動して NTR を読み込む
-3. ゲームを起動し、X+Y で NTR メニュー → Remote Play → **SD Recording: On** → Apply
-4. 録画を終えるときは同じ場所で **Paused** にして Apply（ファイルが閉じられる）
+1. [Releases](https://github.com/noctis1008-wq/Luma3DS/releases/latest) の `Luma3DS-o3ds-rec.firm` を SD の `/luma/payloads/` に置く
+   （Checkpoint の GitHub ダウンローダーなら「o3ds-rec recorder (Luma3DS)」）。普段の `boot.firm` はそのまま
+2. 電源を入れるときに START を押し続け、チェーンローダーで `Luma3DS-o3ds-rec` を選ぶ
+3. L+↓+SELECT → **Screen recorder (o3ds-rec)...** → A で録画開始 → B とメニューを閉じて操作・プレイ
+4. 止めるときは同じ画面で A（スリープ・電源オフ時も自動で閉じる）
 5. `sd:/o3ds-rec/REC_日付_時刻.3dr` を PC にコピーして `3dr2mp4.py` で変換
 
-- 上画面のみ・音声なし（フェーズ2で対応予定）
-- 24bit 色のゲームも RGB565 で記録（30fps 優先）
-- 拡張メモリを使うゲーム（Mode3 版が必要なもの）は対象外
+- 上画面のみ・音声なし（後で対応予定）
+- 24bit 色も RGB565 で記録（30fps 優先）
+- DS/GBA ソフトは録れない
+- NTR-HR 版（[ntr-hr の o3ds-rec ブランチ](https://github.com/noctis1008-wq/ntr-hr/tree/o3ds-rec)）は、NTR-HR 自体のリモートプレイ開始でゲームが止まったため打ち切り
 
 ## フェーズ0のツール
 
