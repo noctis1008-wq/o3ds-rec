@@ -56,9 +56,24 @@ static bool open_bench_file(FS_Archive sdmc, Handle *file)
 }
 
 /* A. 書き込み単位ごとの連続書き込み速度 */
+typedef struct {
+    u32 chunk;    /* 1回の書き込みサイズ */
+    u32 total;    /* 合計 */
+    bool prealloc; /* 先に FSFILE_SetSize でファイルを確保しておく */
+    const char *label;
+} write_case;
+
 static void bench_write(FS_Archive sdmc)
 {
-    static const u32 chunk_sizes[] = {16 * 1024, 64 * 1024, 256 * 1024, 1024 * 1024};
+    static const write_case cases[] = {
+        {64 * 1024, TOTAL_BYTES, false, "64KB"},
+        {256 * 1024, TOTAL_BYTES, false, "256KB"},
+        {1024 * 1024, TOTAL_BYTES, false, "1MB"},
+        {1024 * 1024, TOTAL_BYTES, true, "1MB+prealloc"},
+        {256 * 1024, TOTAL_BYTES, true, "256KB+prealloc"},
+        /* v0.1 の [B] が極端に遅かった原因の確認: 512B境界に揃わない書き込み */
+        {192040, 4u * 1024 * 1024, false, "187KB unaligned"},
+    };
     u8 *buf = linearAlloc(1024 * 1024);
     if (!buf) {
         logf_("  alloc failed\n");
@@ -67,88 +82,113 @@ static void bench_write(FS_Archive sdmc)
     for (u32 i = 0; i < 1024 * 1024; ++i)
         buf[i] = (u8)(i * 2654435761u >> 24);
 
-    logf_("[A] SD sequential write (%u MB)\n", (unsigned)(TOTAL_BYTES >> 20));
-    for (size_t c = 0; c < sizeof(chunk_sizes) / sizeof(chunk_sizes[0]); ++c) {
+    logf_("[A] SD sequential write\n");
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c) {
+        const write_case *wc = &cases[c];
         Handle f;
         if (!open_bench_file(sdmc, &f))
             break;
-        u32 cs = chunk_sizes[c];
-        u64 off = 0, t0 = svcGetSystemTick();
+        u64 t0 = svcGetSystemTick();
+        if (wc->prealloc)
+            FSFILE_SetSize(f, wc->total);
+        u64 off = 0;
         double worst = 0;
-        while (off < TOTAL_BYTES) {
+        while (off + wc->chunk <= wc->total) {
             u32 written = 0;
             u64 t1 = svcGetSystemTick();
-            Result rc = FSFILE_Write(f, &written, off, buf, cs, 0);
+            Result rc = FSFILE_Write(f, &written, off, buf, wc->chunk, 0);
             double d = ms_since(t1);
             if (d > worst)
                 worst = d;
-            if (R_FAILED(rc) || written != cs) {
+            if (R_FAILED(rc) || written != wc->chunk) {
                 logf_("  Write failed %08lX\n", rc);
                 break;
             }
-            off += cs;
+            off += wc->chunk;
         }
         FSFILE_Flush(f);
         double ms = ms_since(t0);
         FSFILE_Close(f);
-        logf_("  %4luKB chunks: %5.2f MB/s  (worst call %.1f ms)\n", cs >> 10,
+        logf_("  %-15s %5.2f MB/s (worst %.0f ms)\n", wc->label,
               (double)off / (1024.0 * 1024.0) / (ms / 1000.0), worst);
     }
     linearFree(buf);
 }
 
-/* B. 録画パイプライン（最悪ケース: 毎フレーム全ライン変化） */
-static void bench_pipeline(FS_Archive sdmc, u8 fmt, int pack, const char *name)
+/*
+ * B. 録画パイプライン（最悪ケース: 毎フレーム全ライン変化）
+ * v0.2: エンコード結果を 1MB のステージングバッファに貯め、
+ *       512B境界に揃った 1MB 単位でだけ書く（実装予定の書き込みスレッドと同じ方式）
+ */
+#define STAGE_BLOCK (1024u * 1024u)
+
+static void bench_pipeline(FS_Archive sdmc, u8 fmt, int pack, bool prealloc, const char *name)
 {
     const u16 lines = 400;
     const u32 pitch = REC_LINE_PX * rec_bpp(fmt);
-    const int frames = 120;
+    const int frames = 150;
+    const size_t frame_max = rec_frame_max_size(lines, REC_FMT_RGBA8);
     u8 *fb[2] = {linearAlloc(lines * pitch), linearAlloc(lines * pitch)};
-    u8 *out = linearAlloc(rec_frame_max_size(lines, REC_FMT_RGBA8));
-    Handle f;
-    if (!fb[0] || !fb[1] || !out || !open_bench_file(sdmc, &f)) {
+    u8 *stage = linearAlloc(STAGE_BLOCK + frame_max);
+    Handle f = 0;
+    bool opened = false;
+    if (!fb[0] || !fb[1] || !stage || !(opened = open_bench_file(sdmc, &f))) {
         logf_("  setup failed\n");
         goto done;
     }
+    if (prealloc)
+        FSFILE_SetSize(f, 64u * 1024 * 1024);
 
     rec_screen_state st;
     rec_screen_init(&st, REC_SCREEN_TOP_LEFT, lines, 0);
     st.pack_rgba8 = (u8)pack;
 
-    double enc_ms = 0, write_ms = 0, same_ms = 0;
+    double enc_ms = 0, write_ms = 0, same_ms = 0, worst = 0;
     u64 off = 0, bytes = 0;
+    size_t fill = 0;
     for (int i = 0; i < frames; ++i) {
         u8 *cur = fb[i & 1], *prev = fb[(i & 1) ^ 1];
         /* 全ラインを少しずつ変える（ゲームのカメラが動いている状態） */
         memset(cur, (u8)(i * 7 + 1), lines * pitch);
 
         u64 t0 = svcGetSystemTick();
-        size_t n = rec_encode_frame(&st, cur, i ? prev : NULL, pitch, fmt, t0, out);
+        size_t n = rec_encode_frame(&st, cur, i ? prev : NULL, pitch, fmt, t0, stage + fill);
         enc_ms += ms_since(t0);
-
-        u64 t1 = svcGetSystemTick();
-        u32 written = 0;
-        FSFILE_Write(f, &written, off, out, n, 0);
-        write_ms += ms_since(t1);
-        off += written;
+        fill += n;
         bytes += n;
+
+        if (fill >= STAGE_BLOCK) {
+            u64 t1 = svcGetSystemTick();
+            u32 written = 0;
+            FSFILE_Write(f, &written, off, stage, STAGE_BLOCK, 0);
+            double d = ms_since(t1);
+            write_ms += d;
+            if (d > worst)
+                worst = d;
+            off += STAGE_BLOCK;
+            fill -= STAGE_BLOCK;
+            memmove(stage, stage + STAGE_BLOCK, fill);
+        }
 
         /* 変化なしフレームの判定コスト（30fpsゲームを60Hzで見ると半分はこれ） */
         u64 t2 = svcGetSystemTick();
-        (void)rec_encode_frame(&st, cur, cur, pitch, fmt, t2, out);
+        (void)rec_encode_frame(&st, cur, cur, pitch, fmt, t2, stage + fill);
         same_ms += ms_since(t2);
     }
-    FSFILE_Flush(f);
-    FSFILE_Close(f);
 
     double per = (enc_ms + write_ms) / frames;
-    logf_("  %-12s %3luKB/f diff %.1fms write %.1fms same %.1fms => max %.1f fps\n", name,
-          (unsigned long)(bytes / frames >> 10), enc_ms / frames, write_ms / frames, same_ms / frames,
-          1000.0 / per);
+    logf_("  %-12s%s %3luKB/f diff %.1f wr %.1f ms => %.1f fps (worst %.0f)\n", name,
+          prealloc ? "+P" : "  ", (unsigned long)(bytes / frames >> 10), enc_ms / frames,
+          write_ms / frames, 1000.0 / per, worst);
+    (void)same_ms;
 done:
+    if (opened) {
+        FSFILE_Flush(f);
+        FSFILE_Close(f);
+    }
     if (fb[0]) linearFree(fb[0]);
     if (fb[1]) linearFree(fb[1]);
-    if (out) linearFree(out);
+    if (stage) linearFree(stage);
 }
 
 int main(void)
@@ -167,16 +207,16 @@ int main(void)
     FSUSER_CreateDirectory(sdmc, fsMakePath(PATH_ASCII, DIR_PATH), 0);
     g_log = fopen(RESULT_FILE, "w");
 
-    logf_("o3ds-rec SD bench v0.1  model: %s\n", is_new ? "New 3DS" : "Old 3DS");
+    logf_("o3ds-rec SD bench v0.2  model: %s\n", is_new ? "New 3DS" : "Old 3DS");
     logf_("(needs ~200MB free on SD, takes 1-2 min)\n\n");
 
     bench_write(sdmc);
 
     logf_("\n[B] Record pipeline, top 400x240, worst case\n");
-    bench_pipeline(sdmc, REC_FMT_RGB565, 0, "RGB565");
-    bench_pipeline(sdmc, REC_FMT_BGR8, 0, "BGR8");
-    bench_pipeline(sdmc, REC_FMT_RGBA8, 1, "RGBA8>BGR8");
-    bench_pipeline(sdmc, REC_FMT_RGBA8, 0, "RGBA8 raw");
+    bench_pipeline(sdmc, REC_FMT_RGB565, 0, false, "RGB565");
+    bench_pipeline(sdmc, REC_FMT_RGB565, 0, true, "RGB565");
+    bench_pipeline(sdmc, REC_FMT_BGR8, 0, true, "BGR8");
+    bench_pipeline(sdmc, REC_FMT_RGBA8, 1, true, "RGBA8>BGR8");
 
     FSUSER_DeleteFile(sdmc, fsMakePath(PATH_ASCII, BENCH_FILE));
     FSUSER_CloseArchive(sdmc);
