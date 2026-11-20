@@ -14,7 +14,22 @@ tools/sdbench/   sdbench.3dsx … 旧3DSのSD書き込み速度・録画パイ�
 test/            往復テスト（Cで録画 → Pythonで復元 → バイト一致と向きを確認）
 ```
 
-## 使い方（現時点＝フェーズ0）
+## 録画のしかた（フェーズ1・実機テスト中）
+
+録画機能は NTR-HR のフォーク [noctis1008-wq/ntr-hr](https://github.com/noctis1008-wq/ntr-hr/tree/o3ds-rec)（`o3ds-rec` ブランチ）に入っている。
+
+1. [Releases](https://github.com/noctis1008-wq/ntr-hr/releases/latest) の `BootNTRSelector-o3ds-rec.3dsx` を SD の `/3ds/` に置く
+   （Checkpoint の GitHub ダウンローダーなら「o3ds-rec NTR (SD recording)」）
+2. Wi-Fi に接続した状態で、Homebrew Launcher から BootNTRSelector を起動して NTR を読み込む
+3. ゲームを起動し、X+Y で NTR メニュー → Remote Play → **SD Recording: On** → Apply
+4. 録画を終えるときは同じ場所で **Paused** にして Apply（ファイルが閉じられる）
+5. `sd:/o3ds-rec/REC_日付_時刻.3dr` を PC にコピーして `3dr2mp4.py` で変換
+
+- 上画面のみ・音声なし（フェーズ2で対応予定）
+- 24bit 色のゲームも RGB565 で記録（30fps 優先）
+- 拡張メモリを使うゲーム（Mode3 版が必要なもの）は対象外
+
+## フェーズ0のツール
 
 ### PC側テスト
 ```sh
