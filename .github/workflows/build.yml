@@ -2,8 +2,9 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 permissions:
   contents: write
@@ -25,9 +26,9 @@ jobs:
           name: sdbench-3dsx
           path: tools/sdbench/sdbench.3dsx
   release:
-    # v で始まるタグを push すると GitHub Releases に sdbench.3dsx を公開する
+    # GitHub で Release を公開すると、ビルドした sdbench.3dsx をその Release に添付する
     # （3DS の GitHub ダウンローダーや Universal-Updater は Releases から取得するため）
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     needs: [host-test, sdbench]
     runs-on: ubuntu-latest
     steps:
@@ -36,5 +37,5 @@ jobs:
           name: sdbench-3dsx
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name }}
           files: sdbench.3dsx
-          generate_release_notes: true
